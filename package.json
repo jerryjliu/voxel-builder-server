@@ -1,0 +1,15 @@
+{
+  "name": "voxel-builder-server",
+  "version" : "1.0.0",
+  "description": "Server of my shape manipulation interface. Client-side code using beefy/browserify is located separately",
+  "author" : "Jerry Liu",
+  "main" : "server.js",
+  "scripts": { 
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "express": "^4.13.3",
+    "body-parser": "1.17.1",
+    "ndarray": "1.0.18"
+  }
+}
