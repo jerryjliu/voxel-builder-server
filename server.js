@@ -3,7 +3,9 @@ var express = require('express');
 var bodyParser = require('body-parser');
 var ndarray = require('ndarray');
 var fs = require('fs');
+var cp = require('child_process');
 var exec = require('child_process').exec;
+var path = require('path');
 
 const PORT = 8000;
 
@@ -150,6 +152,71 @@ function pad_voxels(voxels) {
   return result;
 }
 
+// convert 3D ndarray into ascii Torch .t7 file for output
+function ndarray_to_t7(voxels) {
+  var invoxels_content = ""; // make sure obeys torch format
+  invoxels_content += "4\n1\n3\nV 1\n18\ntorch.DoubleTensor\n";
+  invoxels_content += "4\n";  // dimension of input tensor
+  invoxels_content += "1 64 64 64\n";
+  invoxels_content += "262144 4096 64 1\n";
+  invoxels_content += "1\n";
+  invoxels_content += "4\n";
+  invoxels_content += "2\n";
+  invoxels_content += "3\n";
+  invoxels_content += "V 1\n";
+  invoxels_content += "19\n";
+  invoxels_content += "torch.DoubleStorage\n";
+  invoxels_content += "262144\n";
+   //print contents of padded voxel cube to file
+  for(var i = 0; i < voxels.data.length; i++) {
+    invoxels_content += voxels.data[i] + " ";
+  }
+  return invoxels_content;
+}
+
+// convert ascii Torch .t7 file to 3D ndarray
+function t7_to_ndarray(tfile) {
+  var contents = fs.readFileSync(tfile).toString();
+  var lines = contents.split(/\r?\n/);
+  var ndim = 3;
+  var shapeArr = new Array(ndim);
+  var strideArr = new Array(ndim);
+  var numel;
+  var dataArr;
+  for(var i = 0; i < lines.length; i++) {
+   if (i <= 6) continue; 
+   else if (i == 7) {
+     var tokens = lines[i].split(/[ ,]+/);
+     var start = 1;
+     if (tokens.length == 5) start = 2; 
+     for(var j = start; j < tokens.length; j++) {
+       shapeArr[j - start] = parseInt(tokens[j]);
+     }
+   } else if (i == 8) {
+     var tokens = lines[i].split(/[ ,]+/);
+     var start = 1;
+     if (tokens.length == 5) start = 2; 
+     for(var j = start; j < tokens.length; j++) {
+       strideArr[j - start] = parseInt(tokens[j]);
+     }
+   } else if (i >= 9 && i <= 15) {
+     continue;
+   } else if (i == 16) {
+     numel = parseInt(lines[i]); 
+     dataArr = new Array(numel);
+   } else if (i >= 17) {
+     var tokens = lines[i].split(/[ ,]+/);
+     for(var j = 0; j < tokens.length; j++) {
+       dataArr[j] = parseInt(tokens[j]);
+     }
+   }
+  }
+  console.log(shapeArr);
+  console.log(strideArr);
+  var result = ndarray(dataArr, shapeArr, strideArr);
+  return result;
+}
+
 var app = express();
 app.use(bodyParser.json());
 app.get('/', function(req, res) {
@@ -186,27 +253,59 @@ app.post('/process', function(request, response) {
   var invoxels4 = pad_voxels(invoxels3);
 
   // export voxels to a tensor file
-  var invoxels_file = "/data/jjliu/models/proj_inputs_voxel/testvoxels.t7";
+  var invoxels_file = "testvoxels"; var invoxels_ext = ".t7";
+  var data_dir = '/data/jjliu/models';
+  var proj_inputs_dir = 'proj_inputs_voxel';
+  var full_invoxels_file = path.join(data_dir, proj_inputs_dir, invoxels_file + invoxels_ext);
   //var invoxels_content = "sdasdfasdfadf"; // make sure obeys torch format
-  var invoxels_content = ""; // make sure obeys torch format
-  invoxels_content += "4\n1\n3\nV 1\n18\ntorch.DoubleTensor\n";
-  invoxels_content += "4\n";  // dimension of input tensor
-  invoxels_content += "1 64 64 64\n";
-  invoxels_content += "262144 4096 64 1\n";
-  invoxels_content += "1\n";
-  invoxels_content += "4\n";
-  invoxels_content += "2\n";
-  invoxels_content += "3\n";
-  invoxels_content += "V 1\n";
-  invoxels_content += "19\n";
-  invoxels_content += "torch.DoubleStorage\n";
-  invoxels_content += "262144\n";
-   //print contents of padded voxel cube to file
-  for(var i = 0; i < invoxels4.data.length; i++) {
-    invoxels_content += invoxels4.data[i] + " ";
-  }
+  var invoxels_content = ndarray_to_t7(invoxels4);
 
-  fs.writeFileSync(invoxels_file, invoxels_content);
+  fs.writeFileSync(full_invoxels_file, invoxels_content);
 
+  // run torch script on file
+  var outvoxels_file = invoxels_file + "_out";
+  var outvoxels_ext = ".t7";
+  var proj_outputs_dir = 'proj_outputs_voxel';
+  var full_outvoxels_file = path.join(data_dir, proj_outputs_dir, outvoxels_file + outvoxels_ext);
+  var cmd = "th ";
+  var proj_file = "/home/jjliu/Documents/3dexps/proj_generate.lua";
+  cmd += proj_file + " ";
+  var gpu_opt = "-gpu 2";
+  cmd += gpu_opt + " ";
+  var voxel_opt = "-input " + invoxels_file;
+  cmd += voxel_opt + " ";
+  var informat_opt = "-informat t7";
+  cmd += informat_opt + " ";
+  var ckp_opt = "-ckp checkpoints_64chair100o_vaen2";
+  cmd += ckp_opt + " ";
+  var ckgen_opt = "-ckgen 1450";
+  cmd += ckgen_opt + " ";
+  var ckproj_opt = "-ckproj 180";
+  cmd += ckproj_opt + " ";
+  var ckext_opt = "-ckext feat4";
+  cmd += ckext_opt + " ";
+  //TODO: implement -out in Torch
+  var outf_opt = "-out " + path.join(data_dir, proj_outputs_dir, outvoxels_file);
+  cmd += outf_opt + " ";
+  var outformat_opt = "-outformat t7";
+  cmd += outformat_opt + " ";
+
+  console.log(cmd);
+  //cp.execSync(cmd);     
+
+  // read from outvoxels 
+  console.log(full_outvoxels_file);
+  var outvoxels = t7_to_ndarray(full_outvoxels_file);
+  //console.log(outvoxels);
+  console.log(outvoxels.shape);
+  // flip y,z axes of outvoxels
+  var outvoxels_flip = swap_voxels_axis(outvoxels);
+  // return this file / figure out how to display it on the client
+  //console.log(outvoxels_flip);
+  //console.log(outvoxels_flip.shape);
+  var outvoxels2 = trim_voxels(outvoxels_flip);
+  //console.log(outvoxels2);
+  console.log(outvoxels2.shape);
+  response.json(outvoxels2);
 });
 app.listen(PORT);
