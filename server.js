@@ -46,6 +46,8 @@ function trim_voxels(voxels) {
     }
   }
   var reslen = (maxi - mini + 1) * (maxj - minj + 1) * (maxk - mink + 1);
+  console.log(maxi + " " + mini + " " + maxj + " " + minj);
+  console.log(reslen);
   var results = ndarray(new Array(reslen), [maxi-mini+1,maxj-minj+1,maxk-mink+1]);
   for(var i = mini; i <= maxi; i++) {
     for(var j = minj; j <= maxj; j++) {
@@ -68,6 +70,28 @@ function swap_voxels_axis(voxels) {
     for(var j = 0; j < newShapeArr[1]; j++) {
       for(var k = 0; k < newShapeArr[2]; k++) {
         result.set(i,j,k,voxels.get(i,k,j));
+      }
+    }
+  }
+  return result;
+}
+
+function inv_voxels_axis(voxels, axis) {
+  var shape = voxels.shape;
+  //var visited = ndarray(new Array(voxels.data.length), shape);
+  var result = ndarray(new Array(voxels.data.length), voxels.shape, voxels.stride);
+  for(var i = 0; i < shape[0]; i++) {
+    for(var j = 0; j < shape[1]; j++) {
+      for(var k = 0; k < shape[2]; k++) {
+        var oi = i; var oj = j; var ok = k;
+        if (axis == 0)  {
+          oi = shape[0] - i - 1;
+        } else if (axis == 1) {
+          oj = shape[1] - j - 1;
+        } else if (axis == 2) {
+          ok = shape[2] - k - 1;
+        }
+        result.set(i,j,k,voxels.get(oi,oj,ok));
       }
     }
   }
@@ -152,6 +176,21 @@ function pad_voxels(voxels) {
   return result;
 }
 
+function threshold_voxels(voxels, threshold) {
+  var shape = voxels.shape;
+  for(var i = 0; i < shape[0]; i++) {
+    for(var j = 0; j < shape[1]; j++) {
+      for(var k = 0; k < shape[2]; k++) {
+        if (voxels.get(i,j,k) >= threshold) {
+          voxels.set(i,j,k,1)
+        } else {
+          voxels.set(i,j,k,0)
+        }
+      }
+    }
+  }
+}
+
 // convert 3D ndarray into ascii Torch .t7 file for output
 function ndarray_to_t7(voxels) {
   var invoxels_content = ""; // make sure obeys torch format
@@ -207,7 +246,7 @@ function t7_to_ndarray(tfile) {
    } else if (i >= 17) {
      var tokens = lines[i].split(/[ ,]+/);
      for(var j = 0; j < tokens.length; j++) {
-       dataArr[j] = parseInt(tokens[j]);
+       dataArr[j] = parseFloat(tokens[j]);
      }
    }
   }
@@ -237,18 +276,14 @@ app.get('/', function(req, res) {
 app.post('/process', function(request, response) {
   var invoxels = request.body;
   invoxels = ndarray(invoxels.data, invoxels.shape, invoxels.stride, invoxels.offset);
-  console.log(invoxels);
 
   // process voxels
   var invoxels2 = trim_voxels(invoxels);
-  console.log('TRIMMED VOXELS:');
-  console.log(invoxels2);
-  // swap y-z axis
+  // swap y-z axis, invert new y
   var invoxels2_flip = swap_voxels_axis(invoxels2);
+  var invoxels2_inv = inv_voxels_axis(invoxels2_flip, 0);
   // scale voxels until one end hits 64
-  var invoxels3 = scale_voxels(invoxels2_flip, 64);
-  console.log('SCALED VOXELS:');
-  console.log(invoxels3);
+  var invoxels3 = scale_voxels(invoxels2_inv, 64);
   // pad voxel grid to create a cube with length of all sides equal to length of maximum dimension
   var invoxels4 = pad_voxels(invoxels3);
 
@@ -296,15 +331,13 @@ app.post('/process', function(request, response) {
   // read from outvoxels 
   console.log(full_outvoxels_file);
   var outvoxels = t7_to_ndarray(full_outvoxels_file);
-  //console.log(outvoxels);
-  console.log(outvoxels.shape);
-  // flip y,z axes of outvoxels
-  var outvoxels_flip = swap_voxels_axis(outvoxels);
+  // invert y, flip y,z axes of outvoxels
+  var outvoxels_inv = inv_voxels_axis(outvoxels,0);
+  var outvoxels_flip = swap_voxels_axis(outvoxels_inv);
+  threshold_voxels(outvoxels_flip, 0.6);
   // return this file / figure out how to display it on the client
-  //console.log(outvoxels_flip);
-  //console.log(outvoxels_flip.shape);
   var outvoxels2 = trim_voxels(outvoxels_flip);
-  //console.log(outvoxels2);
+  // threshold voxel values to 1 or 0, threshold=0.1
   console.log(outvoxels2.shape);
   response.json(outvoxels2);
 });
