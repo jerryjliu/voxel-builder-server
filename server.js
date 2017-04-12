@@ -6,6 +6,7 @@ var fs = require('fs');
 var cp = require('child_process');
 var exec = require('child_process').exec;
 var path = require('path');
+var assert = require('assert');
 
 const PORT = 8000;
 
@@ -132,12 +133,61 @@ function scale_voxels(voxels, maxSize) {
     for(var j = 0; j < newShapeArr[1]; j++) {
       for(var k = 0; k < newShapeArr[2]; k++) {
         var x,y,z; 
-        x = Math.floor(i / scaleRatio);
-        y = Math.floor(j / scaleRatio);
-        z = Math.floor(k / scaleRatio);
+        var val;
+        if (scaleRatio >= 1) {
+          x = Math.floor(i / scaleRatio);
+          y = Math.floor(j / scaleRatio);
+          z = Math.floor(k / scaleRatio);
+          val = voxels.get(x,y,z);
+        } else if (scaleRatio >= 0.5) {
+          // do trilinear interpolation of voxels
+          x = i/scaleRatio; y = j/scaleRatio; z = k/scaleRatio;
+          var xl = Math.floor(x); var yl = Math.floor(y); var zl = Math.floor(z);
+          var xh = Math.ceil(x); var yh = Math.ceil(y); var zh = Math.ceil(z);
+          var c00, c01, c10, c11;
+          if (x == xl) {
+            c00 = voxels.get(xl,yl,zl);
+            c01 = voxels.get(xl,yl,zh);
+            c10 = voxels.get(xl,yh,zl);
+            c11 = voxels.get(xl,yh,zh);
+          } else {
+            c00 = voxels.get(xl,yl,zl) * (xh - x) + voxels.get(xh,yl,zl) * (x - xl);
+            c01 = voxels.get(xl,yl,zh) * (xh - x) + voxels.get(xh,yl,zh) * (x - xl);
+            c10 = voxels.get(xl,yh,zl) * (xh - x) + voxels.get(xh,yh,zl) * (x - xl);
+            c11 = voxels.get(xl,yh,zh) * (xh - x) + voxels.get(xh,yh,zh) * (x - xl);
+          }
+          var c0, c1;
+          if (y == yl) {
+            c0 = c00; c1 = c01;
+          } else {
+            c0 = c00 * (yh - y) + c10 * (y - yl);
+            c1 = c01 * (yh - y) + c11 * (y - yl);
+          }
+          if (z == zl) { val = c0;}
+          else { val = c0 * (zh - z) + c1 * (z - zl); }
+        }
+        else {
+          // max pool a region of smaller voxels in the downsampling
+          var kerSize = Math.floor(1 / scaleRatio);
+          var maxVal = 0;
+          for(var a = 0; a < kerSize; a++) {
+            x = a - Math.floor(kerSize/2) + Math.floor(i/scaleRatio);
+            if (x < 0 || x >= shape[0]) continue;
+            for(var b = 0; b < kerSize; b++) {
+              y = b - Math.floor(kerSize/2) + Math.floor(j/scaleRatio);
+              if (y < 0 || y >= shape[1]) continue;
+              for(var c = 0; c < kerSize; c++) {
+                z = c - Math.floor(kerSize/2) + Math.floor(k/scaleRatio);
+                if (z < 0 || z >= shape[2]) continue;
+                if (voxels.get(x,y,z) > maxVal) maxVal = voxels.get(x,y,z);
+              }
+            }
+          }
+          val = maxVal;
+        }
         //console.log(x + " " + y + " " + z + " " + voxels.get(x,y,z));
-        result.set(i,j,k,voxels.get(x,y,z));
-      }
+        result.set(i,j,k,val);
+      } 
     }
   }
   return result;
@@ -176,6 +226,7 @@ function pad_voxels(voxels) {
   return result;
 }
 
+// threshold voxels to 1,0 above some decimal threshold
 function threshold_voxels(voxels, threshold) {
   var shape = voxels.shape;
   for(var i = 0; i < shape[0]; i++) {
@@ -190,6 +241,22 @@ function threshold_voxels(voxels, threshold) {
     }
   }
 }
+
+// remove noise 
+//function remove_noise(voxels) {
+  //var shape = voxels.shape;
+  //for(var i = 0; i < shape[0]; i++) {
+    //for(var j = 0; j < shape[1]; j++) {
+      //for(var k = 0; k < shape[2]; k++) {
+        //var remove = false;
+        //var kvalid = true; var jvalid = true; var ivalid = true;
+        //if (kvalid < 0 || kvalid >= shape[2]) kvalid = false;
+        //if (jvalid < 0 || jvalid >= shape[1]) jvalid = false;
+        //if (ivalid < 0 || ivalid >= shape[0]) ivalid = false;
+      //}
+    //}
+  //}
+//}
 
 // convert 3D ndarray into ascii Torch .t7 file for output
 function ndarray_to_t7(voxels) {
@@ -211,6 +278,11 @@ function ndarray_to_t7(voxels) {
     invoxels_content += voxels.data[i] + " ";
   }
   return invoxels_content;
+}
+
+// convert 3D ndarray into ascii into json file 
+function ndarray_to_json(voxels) {
+  return JSON.stringify(voxels);
 }
 
 // convert ascii Torch .t7 file to 3D ndarray
@@ -256,6 +328,25 @@ function t7_to_ndarray(tfile) {
   return result;
 }
 
+function json_to_ndarray(jfile) {
+  var contents = fs.readFileSync(jfile).toString();
+  var jsonobj = JSON.parse(contents);
+  var dataArr = [];
+  var shapeArr = new Array(3);
+  shapeArr[0] = jsonobj.length; shapeArr[1] = jsonobj[0].length; shapeArr[2] = jsonobj[0][0].length;
+  for(var i = 0; i < jsonobj.length; i++) {
+    var jsonobj1 = jsonobj[i];
+    for(var j = 0; j < jsonobj1.length; j++) {
+      var jsonobj2 = jsonobj[i][j];
+      for(var k = 0; k < jsonobj2.length; k++) {
+        dataArr.push(jsonobj[i][j][k]);
+      }
+    }
+  }
+  var result = ndarray(dataArr, shapeArr);
+  return result;
+}
+
 var app = express();
 app.use(bodyParser.json());
 app.get('/', function(req, res) {
@@ -282,63 +373,105 @@ app.post('/process', function(request, response) {
   // swap y-z axis, invert new y
   var invoxels2_flip = swap_voxels_axis(invoxels2);
   var invoxels2_inv = inv_voxels_axis(invoxels2_flip, 0);
+  var max_trim_dim = Math.max(invoxels2.shape[0], invoxels2.shape[1], invoxels2.shape[2]);
   // scale voxels until one end hits 64
   var invoxels3 = scale_voxels(invoxels2_inv, 64);
   // pad voxel grid to create a cube with length of all sides equal to length of maximum dimension
   var invoxels4 = pad_voxels(invoxels3);
 
   // export voxels to a tensor file
-  var invoxels_file = "testvoxels"; var invoxels_ext = ".t7";
+  var invoxels_file = "testvoxels"; 
+  //var invoxels_ext = ".t7";
+  var invoxels_ext = ".json";
   var data_dir = '/data/jjliu/models';
   var proj_inputs_dir = 'proj_inputs_voxel';
   var full_invoxels_file = path.join(data_dir, proj_inputs_dir, invoxels_file + invoxels_ext);
   //var invoxels_content = "sdasdfasdfadf"; // make sure obeys torch format
-  var invoxels_content = ndarray_to_t7(invoxels4);
+  //var invoxels_content = ndarray_to_t7(invoxels4);
+  var invoxels_content = ndarray_to_json(invoxels4);
 
   fs.writeFileSync(full_invoxels_file, invoxels_content);
 
-  // run torch script on file
+  //// run torch script on file
+  //var outvoxels_file = invoxels_file + "_out";
+  //var outvoxels_ext = ".t7";
+  //var proj_outputs_dir = 'proj_outputs_voxel';
+  //var full_outvoxels_file = path.join(data_dir, proj_outputs_dir, outvoxels_file + outvoxels_ext);
+  //var cmd = "th ";
+  //var proj_file = "/home/jjliu/Documents/3dexps/proj_generate.lua";
+  //cmd += proj_file + " ";
+  //var gpu_opt = "-gpu 1";
+  //cmd += gpu_opt + " ";
+  //var voxel_opt = "-input " + invoxels_file;
+  //cmd += voxel_opt + " ";
+  //var informat_opt = "-informat t7";
+  //cmd += informat_opt + " ";
+  //var ckp_opt = "-ckp checkpoints_64chair100o_vaen2";
+  //cmd += ckp_opt + " ";
+  //var ckgen_opt = "-ckgen 1450";
+  //cmd += ckgen_opt + " ";
+  //var ckproj_opt = "-ckproj 180";
+  //cmd += ckproj_opt + " ";
+  //var ckext_opt = "-ckext feat4";
+  //cmd += ckext_opt + " ";
+  ////TODO: implement -out in Torch
+  //var outf_opt = "-out " + path.join(data_dir, proj_outputs_dir, outvoxels_file);
+  //cmd += outf_opt + " ";
+  //var outformat_opt = "-outformat t7";
+  //cmd += outformat_opt + " ";
+  
+  // run PyTorch script on file
   var outvoxels_file = invoxels_file + "_out";
-  var outvoxels_ext = ".t7";
+  var outvoxels_ext = ".json";
   var proj_outputs_dir = 'proj_outputs_voxel';
   var full_outvoxels_file = path.join(data_dir, proj_outputs_dir, outvoxels_file + outvoxels_ext);
-  var cmd = "th ";
-  var proj_file = "/home/jjliu/Documents/3dexps/proj_generate.lua";
+  var cmd = "python ";
+  var proj_file = "/home/jjliu/Documents/3dexps/proj_generate.py";
   cmd += proj_file + " ";
-  var gpu_opt = "-gpu 2";
+  var gpu_opt = "--gpu 1";
   cmd += gpu_opt + " ";
-  var voxel_opt = "-input " + invoxels_file;
+  var voxel_opt = "--input " + invoxels_file;
   cmd += voxel_opt + " ";
-  var informat_opt = "-informat t7";
+  var informat_opt = "--informat ndarray";
   cmd += informat_opt + " ";
-  var ckp_opt = "-ckp checkpoints_64chair100o_vaen2";
+  var ckp_opt = "--ckp checkpoints_64chair100o_vaen2";
   cmd += ckp_opt + " ";
-  var ckgen_opt = "-ckgen 1450";
+  var ckgen_opt = "--ckgen 1450";
   cmd += ckgen_opt + " ";
-  var ckproj_opt = "-ckproj 180";
+  var ckproj_opt = "--ckproj 229";
   cmd += ckproj_opt + " ";
-  var ckext_opt = "-ckext feat4";
+  var ckext_opt = "--ckext feat8";
   cmd += ckext_opt + " ";
   //TODO: implement -out in Torch
-  var outf_opt = "-out " + path.join(data_dir, proj_outputs_dir, outvoxels_file);
+  var outf_opt = "--out " + path.join(data_dir, proj_outputs_dir, outvoxels_file);
   cmd += outf_opt + " ";
-  var outformat_opt = "-outformat t7";
+  var outformat_opt = "--outformat json";
   cmd += outformat_opt + " ";
 
   console.log(cmd);
-  //cp.execSync(cmd);     
+  cp.execSync(cmd);     
 
   // read from outvoxels 
   console.log(full_outvoxels_file);
-  var outvoxels = t7_to_ndarray(full_outvoxels_file);
+  //var outvoxels = t7_to_ndarray(full_outvoxels_file);
+  var outvoxels = json_to_ndarray(full_outvoxels_file);
+
+  // downscale voxel grid to maximum dimension of trimmed input voxels
+  //var outvoxels_down = scale_voxels(outvoxels, max_trim_dim);
+  var outvoxels_down = scale_voxels(outvoxels, 16);
+
+  //console.log(outvoxels_down);
+  console.log(outvoxels_down.shape);
+  // threshold voxel values
+  threshold_voxels(outvoxels_down, 0.4);
+  // trim voxels as far as possible
+  var outvoxels_trim = trim_voxels(outvoxels_down);
   // invert y, flip y,z axes of outvoxels
-  var outvoxels_inv = inv_voxels_axis(outvoxels,0);
+  var outvoxels_inv = inv_voxels_axis(outvoxels_trim,0);
   var outvoxels_flip = swap_voxels_axis(outvoxels_inv);
-  threshold_voxels(outvoxels_flip, 0.6);
   // return this file / figure out how to display it on the client
-  var outvoxels2 = trim_voxels(outvoxels_flip);
-  // threshold voxel values to 1 or 0, threshold=0.1
-  console.log(outvoxels2.shape);
-  response.json(outvoxels2);
+  //var outvoxels2 = trim_voxels(outvoxels_flip);
+  console.log(outvoxels_flip.shape);
+  response.json(outvoxels_flip);
 });
 app.listen(PORT);
