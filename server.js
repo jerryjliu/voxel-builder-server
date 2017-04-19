@@ -243,20 +243,48 @@ function threshold_voxels(voxels, threshold) {
 }
 
 // remove noise 
-//function remove_noise(voxels) {
-  //var shape = voxels.shape;
-  //for(var i = 0; i < shape[0]; i++) {
-    //for(var j = 0; j < shape[1]; j++) {
-      //for(var k = 0; k < shape[2]; k++) {
-        //var remove = false;
-        //var kvalid = true; var jvalid = true; var ivalid = true;
-        //if (kvalid < 0 || kvalid >= shape[2]) kvalid = false;
-        //if (jvalid < 0 || jvalid >= shape[1]) jvalid = false;
-        //if (ivalid < 0 || ivalid >= shape[0]) ivalid = false;
-      //}
-    //}
-  //}
-//}
+function remove_noise(voxels) {
+  var looping = true;
+  while(looping) {
+    console.log('LOOPING');
+    looping = false;
+    var shape = voxels.shape;
+    for(var i = 0; i < shape[0]; i++) {
+      for(var j = 0; j < shape[1]; j++) {
+        for(var k = 0; k < shape[2]; k++) {
+          var remove = true;
+          if (voxels.get(i,j,k) == 0) continue;
+
+          for(var a = -1; a <= 1; a++) {
+            for(var b = -1; b <= 1; b++) {
+              for(var c = -1; c <= 1; c++) {
+                if (a == 0 && b == 0 && c == 0) continue;
+                if (i+a < 0 || i+a >= shape[0] || j+b < 0 || j+b >= shape[1] || k+c < 0 || k+c >= shape[2]) continue;
+                if (voxels.get(i+a,j+b,k+c) == 1) remove = false;
+              }
+            }
+          }
+          if (remove) {
+            looping = true;
+            voxels.set(i,j,k,0);
+          }
+        }
+      }
+    }
+  }
+}
+
+// reflect voxel grid along midpoint of axis, throwing away things on other side
+function reflect_half(voxels) {
+  var shape = voxels.shape;
+  for(var i = 0; i < Math.floor(shape[1]/2) - 1; i++) {
+    for(var j = 0; j < shape[0]; j++) {
+      for(var k = 0; k < shape[2]; k++) {
+        voxels.set(j, shape[1] - 1 - i, k, voxels.get(j,i,k));
+      }
+    }
+  }
+}
 
 // convert 3D ndarray into ascii Torch .t7 file for output
 function ndarray_to_t7(voxels) {
@@ -428,7 +456,7 @@ app.post('/process', function(request, response) {
   var cmd = "python ";
   var proj_file = "/home/jjliu/Documents/3dexps/proj_generate.py";
   cmd += proj_file + " ";
-  var gpu_opt = "--gpu 1";
+  var gpu_opt = "--gpu 2";
   cmd += gpu_opt + " ";
   var voxel_opt = "--input " + invoxels_file;
   cmd += voxel_opt + " ";
@@ -438,7 +466,7 @@ app.post('/process', function(request, response) {
   cmd += ckp_opt + " ";
   var ckgen_opt = "--ckgen 1450";
   cmd += ckgen_opt + " ";
-  var ckproj_opt = "--ckproj 229";
+  var ckproj_opt = "--ckproj 1000";
   cmd += ckproj_opt + " ";
   var ckext_opt = "--ckext feat8";
   cmd += ckext_opt + " ";
@@ -456,14 +484,21 @@ app.post('/process', function(request, response) {
   //var outvoxels = t7_to_ndarray(full_outvoxels_file);
   var outvoxels = json_to_ndarray(full_outvoxels_file);
 
+  // threshold voxel values
+  threshold_voxels(outvoxels, 0.4);
+  
+  // postprocess - remove noise
+  remove_noise(outvoxels);
+
   // downscale voxel grid to maximum dimension of trimmed input voxels
   //var outvoxels_down = scale_voxels(outvoxels, max_trim_dim);
   var outvoxels_down = scale_voxels(outvoxels, 16);
 
+  // postprocess - reflect along z-axis to keep half
+  reflect_half(outvoxels_down);
+
   //console.log(outvoxels_down);
   console.log(outvoxels_down.shape);
-  // threshold voxel values
-  threshold_voxels(outvoxels_down, 0.4);
   // trim voxels as far as possible
   var outvoxels_trim = trim_voxels(outvoxels_down);
   // invert y, flip y,z axes of outvoxels
